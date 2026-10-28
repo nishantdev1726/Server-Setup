@@ -60,6 +60,18 @@ if ! command -v sudo >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ ! -r /etc/os-release ]]; then
+  printf 'Unable to identify the operating system.\n' >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1091
+source /etc/os-release
+if [[ "${ID:-}" != "ubuntu" ]]; then
+  printf 'This script supports Ubuntu only. Detected: %s\n' "${PRETTY_NAME:-unknown}" >&2
+  exit 1
+fi
+
 printf 'Ubuntu server initialization\n'
 printf 'Target user: %s\n\n' "${TARGET_USER}"
 sudo -v
@@ -223,6 +235,140 @@ while true; do
       ;;
   esac
 done
+
+if confirm 'Install PHP?'; then
+  while true; do
+    read -r -p 'Enter the PHP major and minor version, for example 8.3 or 8.4: ' PHP_VERSION
+    if [[ "${PHP_VERSION}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+      break
+    fi
+    printf 'Enter a version in major.minor format, for example 8.4.\n'
+  done
+
+  INSTALL_COMMON_EXTENSIONS=false
+  if confirm 'Install common PHP extensions for web applications?'; then
+    INSTALL_COMMON_EXTENSIONS=true
+  fi
+
+  if [[ "${VERSION_CODENAME:-}" == "resolute" ]]; then
+    PHP_REPOSITORY="packages.sury.org/php"
+  else
+    PHP_REPOSITORY="ppa:ondrej/php"
+  fi
+
+  printf '\nPHP installation summary:\n'
+  printf '  PHP version: %s\n' "${PHP_VERSION}"
+  printf '  Web server integration: %s\n' "${WEB_SERVER}"
+  printf '  Common extensions: %s\n' "${INSTALL_COMMON_EXTENSIONS}"
+  printf '  Package source: %s\n\n' "${PHP_REPOSITORY}"
+
+  if confirm 'Continue with PHP installation?'; then
+    printf 'Configuring the PHP package repository...\n'
+    install_packages ca-certificates curl lsb-release
+
+    if [[ "${VERSION_CODENAME:-}" == "resolute" ]]; then
+      sudo rm -f \
+        /etc/apt/sources.list.d/ondrej-ubuntu-php-resolute.list \
+        /etc/apt/sources.list.d/ondrej-ubuntu-php-resolute.sources
+
+      KEYRING_PACKAGE="$(mktemp --suffix=.deb)"
+      trap 'rm -f "${KEYRING_PACKAGE}"' EXIT
+      curl -fsSL https://packages.sury.org/debsuryorg-archive-keyring.deb \
+        -o "${KEYRING_PACKAGE}"
+      sudo dpkg -i "${KEYRING_PACKAGE}"
+      rm -f "${KEYRING_PACKAGE}"
+      trap - EXIT
+
+      printf '%s\n' \
+        "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ ${VERSION_CODENAME} main" \
+        | sudo tee /etc/apt/sources.list.d/php.list >/dev/null
+    else
+      install_packages software-properties-common
+      sudo add-apt-repository -y ppa:ondrej/php
+    fi
+
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+    APT_UPDATED=true
+
+    REQUIRED_PHP_PACKAGES=(
+      "php${PHP_VERSION}-cli"
+      "php${PHP_VERSION}-common"
+    )
+
+    if [[ "${WEB_SERVER}" != "none" ]]; then
+      REQUIRED_PHP_PACKAGES+=("php${PHP_VERSION}-fpm")
+    fi
+
+    for package in "${REQUIRED_PHP_PACKAGES[@]}"; do
+      if ! apt-cache show "${package}" >/dev/null 2>&1; then
+        printf 'Required package %s is unavailable for %s. PHP was not installed.\n' \
+          "${package}" "${PRETTY_NAME}" >&2
+        exit 1
+      fi
+    done
+
+    PHP_PACKAGES=("${REQUIRED_PHP_PACKAGES[@]}")
+
+    if [[ "${INSTALL_COMMON_EXTENSIONS}" == true ]]; then
+      OPTIONAL_PHP_PACKAGES=(
+        "php${PHP_VERSION}-bcmath"
+        "php${PHP_VERSION}-curl"
+        "php${PHP_VERSION}-gd"
+        "php${PHP_VERSION}-intl"
+        "php${PHP_VERSION}-mbstring"
+        "php${PHP_VERSION}-mysql"
+        "php${PHP_VERSION}-readline"
+        "php${PHP_VERSION}-xml"
+        "php${PHP_VERSION}-zip"
+      )
+
+      if dpkg --compare-versions "${PHP_VERSION}" lt "8.5"; then
+        OPTIONAL_PHP_PACKAGES+=("php${PHP_VERSION}-opcache")
+      else
+        printf 'PHP %s includes OPcache. No separate package is required.\n' \
+          "${PHP_VERSION}"
+      fi
+
+      for package in "${OPTIONAL_PHP_PACKAGES[@]}"; do
+        if apt-cache show "${package}" >/dev/null 2>&1; then
+          PHP_PACKAGES+=("${package}")
+        else
+          printf 'Warning: optional package %s is unavailable and will be skipped.\n' \
+            "${package}" >&2
+        fi
+      done
+    fi
+
+    printf 'Installing PHP %s packages...\n' "${PHP_VERSION}"
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${PHP_PACKAGES[@]}"
+
+    if [[ -x "/usr/bin/php${PHP_VERSION}" ]]; then
+      sudo update-alternatives --set php "/usr/bin/php${PHP_VERSION}"
+    fi
+
+    if [[ "${WEB_SERVER}" == "nginx" ]]; then
+      sudo systemctl enable --now "php${PHP_VERSION}-fpm.service"
+      sudo systemctl restart "php${PHP_VERSION}-fpm.service"
+      printf 'PHP FPM socket for Nginx: /run/php/php%s-fpm.sock\n' "${PHP_VERSION}"
+      printf 'Configure the Nginx server block to pass PHP requests to this socket.\n'
+    elif [[ "${WEB_SERVER}" == "apache" ]]; then
+      sudo a2enmod proxy_fcgi setenvif
+      sudo a2enconf "php${PHP_VERSION}-fpm"
+      sudo systemctl enable --now "php${PHP_VERSION}-fpm.service"
+      sudo systemctl restart "php${PHP_VERSION}-fpm.service"
+      sudo apache2ctl configtest
+      sudo systemctl restart apache2.service
+      printf 'Apache is configured to use PHP %s through PHP FPM.\n' "${PHP_VERSION}"
+    else
+      printf 'No web server was selected. PHP CLI was installed without PHP FPM.\n'
+    fi
+
+    printf 'Selected PHP CLI version: '
+    php --version | head -n 1
+  else
+    printf 'PHP installation skipped.\n'
+  fi
+fi
 
 printf '\nInitialization completed successfully.\n'
 

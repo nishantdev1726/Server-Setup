@@ -1,31 +1,42 @@
 # Ubuntu Server Setup
 
-Run these commands from the directory containing the scripts. Use your normal login user. The scripts request `sudo` when required.
-
-## 1. Initialize the server
+Run the following commands from the directory containing the script. Use your normal login user. The script requests `sudo` when required.
 
 ```bash
 chmod +x ubuntu-server-init.sh
 ./ubuntu-server-init.sh
 ```
 
-This interactive script can update Ubuntu packages, install `btop` and `micro`, configure persistent swap, install NVM, install Docker with log rotation and optional weekly cleanup, and install Nginx or Apache with the matching Certbot plugin.
+The interactive script can perform the following tasks:
 
-## 2. Install PHP
+1. Update Ubuntu packages.
+2. Install `btop` and `micro`.
+3. Configure persistent swap memory.
+4. Install NVM.
+5. Install Docker with log rotation and optional weekly cleanup.
+6. Install Nginx or Apache with the matching Certbot plugin.
+7. Optionally install a selected PHP version and common extensions.
 
-Run this after server initialization, especially when selecting an Nginx or Apache profile.
-
-```bash
-chmod +x install-php.sh
-./install-php.sh
-```
-
-This interactive script asks for a PHP version and installation profile. It configures the appropriate PHP package repository, installs PHP CLI, optionally installs PHP FPM and common extensions, selects the requested CLI version, and configures PHP FPM for Apache when selected. For Nginx, it reports the PHP FPM socket that must be added to the Nginx server block.
+PHP installation is controlled by an `Install PHP?` confirmation. When Nginx is selected, the script installs and starts PHP FPM and reports its socket path for the Nginx configuration. When Apache is selected, it installs PHP FPM and enables the required Apache integration. When no web server is selected, it installs PHP CLI without PHP FPM.
 
 ## Notes
 
-1. These scripts support Ubuntu and require `sudo` access.
-2. Do not run them from a direct root login.
+1. The script supports Ubuntu and requires `sudo` access.
+2. Do not run it from a direct root login.
 3. Review each interactive choice before confirming it.
-4. The Docker option can schedule automatic deletion of unused resources older than seven days.
-5. When Docker is installed, log out and sign in again before using Docker without `sudo`.
+4. The Docker cleanup option automatically removes unused Docker resources older than seven days.
+5. After Docker installation, log out and sign in again before using Docker without `sudo`.
+6. The standalone `install-php.sh` file remains available, but it is no longer required for the combined setup flow.
+
+## Create an Nginx reverse proxy site
+
+Run this script after Nginx is installed:
+
+```bash
+chmod +x create-nginx-site.sh
+./create-nginx-site.sh
+```
+
+The script asks for a domain name and application port, creates `/etc/nginx/sites-available/domain.com`, and enables it through `/etc/nginx/sites-enabled/domain.com`. It validates the generated configuration with `nginx -t` before reloading Nginx. If validation fails, it restores the previous configuration.
+
+If a configuration already exists for the domain, the script asks before replacing it and creates a timestamped backup.
